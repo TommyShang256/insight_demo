@@ -66,3 +66,13 @@ python3 dimension_profile.py --top-k 10 --max-pairs 6
 Top-K 按频次降序，平局按类型化 JSON 键字典序排序，只限制展示，不改变统计分母。只为选中的组计算分布；空值组若不在 Top-K，仍计入概况和剩余覆盖。空输入的占比为 null；无普通维度的状态为 not_applicable。
 
 维度为 NaN/Infinity 时拒绝输入，指标中的非有限值仍按 StatisticProfile 规则单独计数。当前完整持有输入并建立组到行引用的映射，Top-K 不限制输入内存；组合按顺序计算，尚未进行百万行压力验证。两路合并和 subagent 委派不在当前实现范围内。
+
+## OpenCode 委派 Skill
+
+项目技能位于 [cube-insight-delegation](.opencode/skills/cube-insight-delegation/SKILL.md)。依据两路 profile 选择任务切片、约束数据读取和上下文、记录覆盖并验证 subagent 返回；不包含新的 profile 算法或业务再聚合。
+
+在支持项目 skill 的 OpenCode 会话中可这样请求：
+
+> 使用 cube-insight-delegation skill，读取 mock/statistic_profile.json 和 mock/dimension_profile.json，以 mock/events.json 为结果数据，规划并执行分渠道的时间差异观察。只描述查询返回值，明确覆盖范围并给出行级证据。
+
+只需要计划时将“规划并执行”改为“仅规划，不启动 subagent”。技能内附字段契约和当前 mock 的示例；实际调用的工具、agent 和并发能力以运行环境为准。当前完成技能格式与示例数据一致性校验，未进行真实 OpenCode 调度测试。
