@@ -1,6 +1,6 @@
 # Cube Profiling：当前设计
 
-StatisticProfile 已实现 Python 标准库内存版本（statistic_profile.py）；DimensionProfile 和 subagent 调度尚未实现。运行方式与限制见 README.md。
+StatisticProfile（statistic_profile.py）与 DimensionProfile（dimension_profile.py）均已实现 Python 标准库内存版本；subagent 调度尚未实现。运行方式与限制见 README.md。
 
 ## 输入边界
 
@@ -20,17 +20,21 @@ HAVING/LIMIT 等可能使返回结果只是部分组，profile 不把它们解�
 
 示例：同一小时两个渠道分别返回转化率 1 和 1/9，profile 描述这两个值的极值、均值、分位数等，不把描述性均值声称为整体转化率。
 
-## DimensionProfile（后续实现）
+## DimensionProfile
 
-在相同结果边界内统计单维基数、空值、频次、结果行占比，以及单维/组合维度切片内的指标值分布，不重新计算业务指标。
+在相同结果边界内统计单维基数、空值、频次、结果行占比，以及单维/二阶组合切片内的指标分布。占比只采用结果行数，明确不计算指标贡献占比。
 
-保留二阶组合、Top-K 和时间切片的有界输出方向：默认 K=10，按结果行频次稳定排序；维度不超过 4 个时覆盖所有维度对，更多维度按基数乘积与 ID 排序最多取 6 对，并显式说明跳过范围。Other 表示被截断的结果行集合，仅描述其行数和指标分布。
+原子步骤：validate_input 校验输入；dimension_key 生成类型化键；group_rows 对全量结果分组；dimension_overview 统计基数与空值；select_groups 选出 Top-K；describe_slice 复用 distribution 并调用 time_coverage 描述时间范围。describe_dimension_set 组装单维或组合描述，dimension_profile 负责调度与输出。
 
-此前讨论的指标贡献占比不应通过隐式业务汇总生成；在本次明确的描述边界下，其具体展示口径尚未实现。当前 StatisticProfile 不输出该项。只提供数据描述，不生成异常标签、归因或委派建议。
+默认 K=10，按结果行频次降序、类型化 JSON 键字典序稳定排序。仅对选中组计算指标分布与时间覆盖；剩余部分单独报告 remaining_group_count、remaining_row_count 和 remaining_row_share，不生成 Other 组。NULL 与字符串独立分组，参与分母；Top-K 不保证强制展示 NULL 组，但空值总量始终保留。
+
+二阶组合默认最多 6 对，先按单维实际组数乘积（含 NULL）升序、再按维度名排序选择，因此默认不超过 4 维时覆盖全部对。显式记录跳过的组合；该顺序只用于成本控制。max_pairs=0 可禁用组合，不实现三阶及以上组合。
+
+slice 保存带类型的维度名与值，供后续准确定位数据；不生成查询或分析建议。切片时间覆盖复用 StatisticProfile 的日期解析与时区规则，只记录观测范围、不同时间值数及有效/空/非法时间数量，不推断间隔缺失或业务零值。
 
 ## 实现与输出
 
-当前直接输出 StatisticProfile，结构为 schema_version=2.0、profile_type、scope、dataset、metrics、time、calculation。最终两路合并尚未实现。
+两路独立输出：StatisticProfile 为 schema_version=2.0，包含 scope、dataset、metrics、time、calculation；DimensionProfile 为 schema_version=1.0，包含 status、scope、single_dimensions、combinations、coverage、calculation。最终两路合并尚未实现。
 
 内存版本完整载入 JSON，精确排序计算分位数，保留唯一结果键统计重复。时间桶默认最多输出 1000 个，明确标记实际桶数与截断；可通过参数增加输出数量，不静默假定已完整返回。Python 浮点运算不保证十进制财务精度。
 
