@@ -1,0 +1,61 @@
+{
+  "dimensions": [
+    {
+      "id": "channel",
+      "name": "channel",
+      "labelEn": "Channel",
+      "labelCh": "渠道",
+      "filters": []
+    },
+    {
+      "id": "region",
+      "name": "region",
+      "labelEn": "Region",
+      "labelCh": "地区",
+      "filters": []
+    },
+    {
+      "id": "product",
+      "name": "product_id",
+      "labelEn": "Product",
+      "labelCh": "商品",
+      "filters": []
+    }
+  ],
+  "metrics": [
+    {
+      "id": "revenue",
+      "name": "收入",
+      "result_column": "revenue",
+      "aggregation": "SUM",
+      "unit": "CNY"
+    },
+    {
+      "id": "events",
+      "name": "事件数",
+      "result_column": "events",
+      "aggregation": "COUNT",
+      "unit": "条"
+    },
+    {
+      "id": "conversion_rate",
+      "name": "转化率",
+      "result_column": "conversion_rate",
+      "aggregation": "EXPRESSION",
+      "unit": "ratio"
+    }
+  ],
+  "time": {
+    "id": "event_time",
+    "name": "event_time",
+    "labelEn": "Event Time",
+    "labelCh": "事件时间",
+    "filters": [
+      "event_time >= '2026-08-01 00:00:00' AND event_time < '2026-08-08 00:00:00'",
+      "event_time >= '2026-08-15 00:00:00' AND event_time < '2026-08-22 00:00:00'"
+    ],
+    "grain": "hour",
+    "timezone": "Asia/Shanghai"
+  },
+  "note": "输入是 query.sql 的实际结果。filters 为空表示不限制；SQL 已执行，profiling 不重复过滤。aggregation 仅说明原 SQL 的聚合类型，profile 直接描述返回值。"
+}
