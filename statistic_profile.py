@@ -35,7 +35,7 @@ def finite_number(value):
 def unavailable(reason):
     """构造统一的“无法计算”结果，保留具体原因。
 
-    使用说明：reason 为可读的原因字符串，例如 unavailable("缺少分母列")。
+    使用说明：reason 为可读的原因字符串，例如 unavailable("未定义业务有效性规则")。
     返回包含 status="unavailable"、value=None 和 reason 的字典。
 
     方法原理：只封装状态，不执行计算。调用方据此区分“缺少条件而无法计算”
@@ -257,12 +257,12 @@ def time_profile(rows, cube, max_buckets):
     }
 
 
-def statistic_profile(rows, cube, max_time_buckets=1000):
+def statistic_profile_detail(rows, cube, max_time_buckets=1000):
     """从一个 cube 的 SQL 结果生成完整 StatisticProfile，是主要调用入口。
 
     使用说明：rows 为 list[dict]，每行列集合相同，只包含 JSON 标量；
     cube 提供 dimensions、metrics 和可选 time；max_time_buckets 默认为 1000。
-    调用 profile = statistic_profile(rows, cube)，返回可序列化的字典，包含
+    调用 profile = statistic_profile_detail(rows, cube)，返回可序列化的字典，包含
     scope、dataset、metrics、time 和 calculation，不修改传入的行或元数据。
     缺少必需列、列不一致、重复指标 ID 等已检查的错误会抛出 ValueError；
     缺少元数据必需键仍可能抛出 KeyError，调用方应遵守 cube 的字段约定。
@@ -316,12 +316,26 @@ def statistic_profile(rows, cube, max_time_buckets=1000):
     }
 
 
+def statistic_profile(rows, cube, max_windows=24, max_bytes=16000):
+    """默认返回紧凑摘要；全量计算，最多 24 个时间展示窗口。
+
+    使用：statistic_profile(rows, cube)，字节上限默认 16000；0 为显式不设上限。
+    原理：复用原全局统计，并从原结果值压缩时间窗口，预算不足时减少窗口数。
+    完整旧结构可用 statistic_profile_detail；按切片分页使用 query_profile.py。
+    MySQL 下推参见 compact_profile.time_summary，各窗口不生成业务总量。
+    """
+    from compact_profile import bounded_statistic
+    return bounded_statistic(rows, cube, max_windows, max_bytes)
+
+
 def main():
     """从命令行读取 cube 与结果 JSON，计算并写出 StatisticProfile 文件。
 
     使用说明：在项目目录执行 python3 statistic_profile.py；默认读取
     mock/cube.json、mock/events.json，写入 mock/statistic_profile.json。
-    可用 --cube、--data、--output 指定路径，--max-time-buckets 指定桶数量上限。
+    默认输出紧凑摘要；--max-windows 控制展示窗口，--max-bytes 控制字节预算。
+    --detail 显式使用详细结构，此时 --max-time-buckets 指定桶数量上限。
+    可用 --cube、--data、--output 指定路径。
     路径相对于当前工作目录；输出父目录需已存在，同名文件会被覆盖。
 
     方法原理：argparse 解析参数，json.loads 读取对象，调用 statistic_profile，
@@ -335,9 +349,14 @@ def main():
     parser.add_argument('--data', type=Path, default=Path('mock/events.json'))
     parser.add_argument('--output', type=Path, default=Path('mock/statistic_profile.json'))
     parser.add_argument('--max-time-buckets', type=int, default=1000)
+    parser.add_argument('--detail', action='store_true', help='显式输出旧版详细结构')
+    parser.add_argument('--max-windows', type=int, default=24)
+    parser.add_argument('--max-bytes', type=int, default=16000)
     args = parser.parse_args()
-    profile = statistic_profile(json.loads(args.data.read_text()), json.loads(args.cube.read_text()), args.max_time_buckets)
-    args.output.write_text(json.dumps(profile, ensure_ascii=False, indent=2, allow_nan=False) + '\n')
+    rows, cube = json.loads(args.data.read_text()), json.loads(args.cube.read_text())
+    profile = (statistic_profile_detail(rows, cube, args.max_time_buckets) if args.detail
+               else statistic_profile(rows, cube, args.max_windows, args.max_bytes))
+    args.output.write_text(json.dumps(profile, ensure_ascii=False, separators=(',', ':'), allow_nan=False) + '\n')
     print(f"Wrote {args.output}: {profile['dataset']['result_row_count']} result rows")
 
 

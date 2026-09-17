@@ -1,6 +1,6 @@
 # Insight demo：Cube Profiling
 
-Python 3.9+，仅使用标准库。输入为已执行 SQL 的结果对象列表及 cube 元数据，不执行过滤表达式，不反查底表。已实现 StatisticProfile 与 DimensionProfile，分别输出。
+Python 3.9+，仅使用标准库。两路 profile 默认生成面向委派的紧凑摘要：全量计算，限制展开长度。输入是已执行 SQL 的结果，不反查底表、不重算业务指标。
 
 ```sh
 python3 mock/generate.py
@@ -9,70 +9,61 @@ python3 dimension_profile.py
 python3 -m unittest -v
 ```
 
-输出：`mock/statistic_profile.json` 和 `mock/dimension_profile.json`。自定义路径：
+默认输出 `mock/statistic_profile.json` 与 `mock/dimension_profile.json`。当前 mock 的紧凑 JSON：两路分别约 12 KB、16 KB，原详细结构同样紧凑编码约 453 KB、102 KB。压缩来自减少重复结构和逐项展开，不仅是去掉缩进。
 
-```sh
-python3 statistic_profile.py --cube mock/cube.json --data mock/events.json --output mock/statistic_profile.json --max-time-buckets 1000
-```
+## 默认摘要
 
-Python 调用：
+StatisticProfile 3.0 保留数据质量、各指标全局分布，并用最多 24 个展示窗口覆盖全部有效时间结果。窗口优先不跨未观测间隔；段数超过预算时可打包，但明确标记 `spans_unobserved_gap`。窗口分位数直接由原结果值计算，极值附原数组行索引和时间。
+
+DimensionProfile 2.0 对每个已计算的单维/二阶组合保留：
+
+- 全量组数、空值、组大小分布、单例组规模、频次 Top-10 覆盖。
+- 全部数值组的指标中位数/标准差分布，每组等权，明确区别于原结果行分布。
+- 最多 8 个具体代表组，低基数时全部展示；高基数时轮转选高频组和指标组统计的两端及中间组，并保留选择原因与样本量。
+- 代表组已展开/未展开的组数和行数，以及未计算的二阶组合。
+
+`metric_schema` 声明指标顺序，`stats_columns` 声明统计列顺序，其他表也附列名。数组中的 NULL 仍保留。低基数渠道维度用几行表达，不再为每个指标反复嵌套长字段说明。
 
 ```python
 from statistic_profile import statistic_profile
 from dimension_profile import dimension_profile
-statistic = statistic_profile(rows, cube)
-dimension = dimension_profile(rows, cube, top_k=10, max_pairs=6)
+statistic = statistic_profile(rows, cube, max_windows=24, max_bytes=16000)
+dimension = dimension_profile(rows, cube, top_k=8, max_pairs=6, max_bytes=16000)
 ```
-w
-## 已实现
 
-- 结果行数、字段观测类型、空值数与比例、完全重复结果的额外行数与重复组数。
-- 指标结果值的数值样本量、空值、非数值、非有限值、零值和负值；极值、均值、总体标准差及 P05/P25/P50/P75/P95 线性插值分位数。
-- 时间覆盖、无效时间数及逐桶行数与指标分布；支持 hour/day/month，按声明时区处理 ISO 字符串。仅输出观测桶，避免把过滤排除的一周当成缺失时间。
-- 无时间维度、零行、全空值、非数值及无效时间等边界。
+每路默认硬限制 16000 字节，两路总计最多 32000 字节（不含文件末尾换行）；使用实际紧凑 UTF-8 JSON 测量，不宣称是模型精确 token 数。输出记录 `output_budget`。时间超预算会减少窗口并重算，保持全部时间覆盖；维度超预算先减少组合代表项、再减少单维代表项，保留全量概况。连最小概况都超预算时明确报错，要求选择更少的指标/维度或提高预算，不静默删除定义。`--max-bytes 0` 显式关闭限制。
 
-## 口径与限制
+## 按需查询明细
 
-`distribution.mean` 是 SQL 结果单元格的描述性均值，不是业务整体指标。时间桶中的 `metrics.<id>.distribution` 也采用相同口径。profile 不生成业务汇总值，不要求公式、分子或分母；`aggregation` 仅保留原 SQL 的聚合类型作为说明。StatisticProfile 输出结构版本为 2.0，DimensionProfile 为 1.0。返回结果可能经过 HAVING/LIMIT，scope 将源总体完整性标记为 unknown，不能反推底层明细质量。
-
-字段类型来自 Python 值的观测，空表/全 NULL 不猜测数据库类型；非空输入缺少必需列或各行列集合不一致时明确报错。输入仅支持 JSON 标量，日期使用 ISO 字符串。不执行任意 validity_sql，业务 valid_count 保持 unavailable，数值样本数单独报告。
-
-第一版完整载入 JSON；分位数保留并排序样本，重复检测维护唯一结果集合，尚未实现流式或百万级压力验证。使用 Python 整数/浮点运算，不承诺十进制财务精度。时间序列默认最多返回 1000 桶，超出显式标记 truncated 与实际桶数，可调大 CLI 参数重新输出；未实现分页或连续空桶补齐。
-
-当前 mock：279 行查询结果、280 个事件、279 个观测小时桶；源 SQL 的两个时间范围在 cube.time.filters 中以 OR 表示。
-
-## MySQL 下推注释
-
-`statistic_profile.py` 和 `dimension_profile.py` 的统计函数均附 MySQL 下推说明，按 MySQL 8.0+ 的 CTE 和窗口函数设计。所有查询从完整原 SQL 的结果 r 计算；建议物化/复用同一快照。普通计数/分布可合并为一条 SELECT；分位数通过 ROW_NUMBER、COUNT 窗口与相邻位置插值实现。辅助函数也注明与 SQL 的对应关系。
-
-参考 MySQL 官方文档：[聚合函数](https://dev.mysql.com/doc/refman/8.4/en/aggregate-functions.html)、[窗口函数](https://dev.mysql.com/doc/refman/8.0/en/window-function-descriptions.html)。
-
-16 项测试覆盖维度频次、空值组合、Top-K 覆盖守恒、稳定排序、组合预算、维度 SQL 分组对照，以及输入校验、空值、重复、分位数、时区、只含比率结果列的数据，以及聚合类型不改变统计行为；用 SQLite 独立查询核对全局描述统计、逐时间桶分布与分位数。MySQL 注释尚未在真实 MySQL 实例上运行；SQLite 对照不等价于 MySQL 集成测试。
-
-## DimensionProfile 使用与字段
+不需要预先生成巨大的完整 profile 文件，直接在原查询结果上请求必要明细：
 
 ```sh
-python3 dimension_profile.py --top-k 10 --max-pairs 6
+# 维度值列表与该页各组的收入分布
+python3 query_profile.py --kind groups --dimensions channel --metrics revenue --limit 10
+
+# 指定渠道、指定时段的原小时桶
+python3 query_profile.py --kind time --metrics revenue --start '2026-08-15 00:00:00' --end '2026-08-17 00:00:00' --filters '[{"name":"channel","type":"string","value":"ads"}]'
+
+# 仅描述该切片的收入分布
+python3 query_profile.py --kind slice --metrics revenue --filters '[{"name":"channel","type":"null","value":null}]'
 ```
 
-- `single_dimensions`：每个普通维度的非空基数、空值行数、频次 Top-K 切片。
-- `combinations`：默认最多 6 个二阶维度对，按单维实际组数（含 NULL）乘积及维度名排序选择。`--max-pairs 0` 禁用组合。
-- 每个维度集合的 `group_count` 包含 NULL 组，`non_null_group_count` 不含任一维度为空的组；单维时后者就是非空基数。
-- `groups[].slice`：带类型的维度名/值，区分 NULL、空字符串、真实 Other、数字和布尔值。`1` 与 `1.0` 合组，字符串 `"1"` 独立。
-- `groups[].result_row_share`：该切片行数除以完整输入结果行数（含 NULL），不是指标贡献占比。比如 4 行中广告渠道出现 3 行，比例就是 0.75。
-- `groups[].metrics`：复用现有分布算法描述切片的指标值；`time` 只给时间覆盖、有效/无效/空时间数及不同时间值数量，不展开逐桶数据。
-- `coverage`：组级记录已展示与剩余组数、行数、占比及截断状态；顶层记录未执行组合与原因。没有合成的 Other 组。
+条件数组内 AND；时间左闭右开；时间解析遵守 cube 时区。分页返回 `total_count/returned_count/has_more/next_offset`；字节预算可能使本页条数小于 limit，应使用实际 next_offset 继续，并确认 `data_sha256` 与 `query` 相同。哈希覆盖数据及 cube 的规范序列化，不是文件字节哈希。行占比分母始终为完整输入行数。
 
-Top-K 按频次降序，平局按类型化 JSON 键字典序排序，只限制展示，不改变统计分母。只为选中的组计算分布；空值组若不在 Top-K，仍计入概况和剩余覆盖。空输入的占比为 null；无普通维度的状态为 not_applicable。
+详细函数 `statistic_profile_detail` 与 `dimension_profile_detail` 保留原结构，CLI 可显式加 `--detail`。这些入口不受摘要字节限制，不应默认传给主 agent。分页入口才适合获取高基数明细。
 
-维度为 NaN/Infinity 时拒绝输入，指标中的非有限值仍按 StatisticProfile 规则单独计数。当前完整持有输入并建立组到行引用的映射，Top-K 不限制输入内存；组合按顺序计算，尚未进行百万行压力验证。两路合并和 subagent 委派不在当前实现范围内。
+## 边界与验证
+
+结果行占比不是收入贡献占比。转化率的分位数和均值只描述返回值，不等于整体转化率。摘要保留差异线索，但不保证代表组捕获所有现象；主 agent 需记录实际读取覆盖。摘要极值索引指向原文件数组，排序/切片后不要重新编号。
+
+当前仍完整加载结果。新增摘要层复用原原子统计，高基数组间分布需计算全部组；尚未实现流式或数据库下推执行。列式 JSON 减少模型输入，不意味着减少所有计算内存。NULL/非法值、浮点精度、夏令时本地小时歧义等仍遵循原统计规则。
+
+22 项测试覆盖原统计与 SQL 对照、时间分位数来自原值、全量组间分布、极值定位、间隔处理、预算缩减不丢覆盖、分页无重复遗漏及类型化 NULL 筛选。各原子方法保留中文说明与 MySQL 下推注释；未在真实 MySQL 上执行。
 
 ## OpenCode 委派 Skill
 
-项目技能位于 [cube-insight-delegation](.opencode/skills/cube-insight-delegation/SKILL.md)。依据两路 profile 选择任务切片、约束数据读取和上下文、记录覆盖并验证 subagent 返回；不包含新的 profile 算法或业务再聚合。
+[项目 skill](.opencode/skills/cube-insight-delegation/SKILL.md)已适配新版本。可请求：
 
-在支持项目 skill 的 OpenCode 会话中可这样请求：
+> 使用 cube-insight-delegation skill，读取 mock 中两路紧凑摘要，以 mock/events.json 为结果数据，规划并执行分渠道的时间差异观察。按需查询明细，明确覆盖范围并提供行级证据。
 
-> 使用 cube-insight-delegation skill，读取 mock/statistic_profile.json 和 mock/dimension_profile.json，以 mock/events.json 为结果数据，规划并执行分渠道的时间差异观察。只描述查询返回值，明确覆盖范围并给出行级证据。
-
-只需要计划时将“规划并执行”改为“仅规划，不启动 subagent”。技能内附字段契约和当前 mock 的示例；实际调用的工具、agent 和并发能力以运行环境为准。当前完成技能格式与示例数据一致性校验，未进行真实 OpenCode 调度测试。
+技能格式与示例数据可在本地验证，尚未执行真实 OpenCode subagent 调度。

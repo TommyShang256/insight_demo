@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 import unittest
 
-from dimension_profile import dimension_profile
+from dimension_profile import dimension_profile_detail as dimension_profile
 
 
 def cube():

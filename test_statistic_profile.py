@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 import unittest
 
-from statistic_profile import statistic_profile, distribution
+from statistic_profile import statistic_profile_detail as statistic_profile, distribution
 
 
 def cube():

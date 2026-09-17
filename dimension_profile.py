@@ -206,10 +206,10 @@ def describe_dimension_set(rows, names, cube, top_k):
             'groups': [describe_slice(groups[key], names, key, cube, len(rows)) for key in selected]}
 
 
-def dimension_profile(rows, cube, top_k=10, max_pairs=6):
+def dimension_profile_detail(rows, cube, top_k=10, max_pairs=6):
     """生成 DimensionProfile，是对外的内存计算入口。
 
-    使用：dimension_profile(rows, cube)，默认每组维度展示 10 个值、最多计算 6 个
+    使用：dimension_profile_detail(rows, cube)，默认每组维度展示 10 个值、最多计算 6 个
     二阶维度对；max_pairs=0 禁用组合。无普通维度返回 not_applicable，空结果保留零计数。
     原理：先描述所有单维，按各对单维实际组数乘积升序、维度名升序挑选组合，
     再逐对计算。所有未执行组合及原因显式返回。选对仅用于限制成本，不代表业务价值。
@@ -236,11 +236,24 @@ def dimension_profile(rows, cube, top_k=10, max_pairs=6):
                             'row_share_denominator': 'all_sql_result_rows_including_null_dimensions'}}
 
 
+def dimension_profile(rows, cube, top_k=8, max_pairs=6, max_bytes=16000):
+    """默认返回全量分布摘要，top_k 在摘要中表示代表组数量上限。
+
+    使用：dimension_profile(rows,cube)，所有组参与计算，不仅计算高频组。
+    原理：提取组大小、组中位数/离散度分布并选择代表组；控制序列化字节数。
+    原详细结构使用 dimension_profile_detail；完整值列表使用 query_profile.py 分页。
+    MySQL 按维度分组后对组统计作窗口统计，参见 compact_profile 的各方法。
+    """
+    from compact_profile import dimension_summary, fit_budget
+    return fit_budget(dimension_summary(rows, cube, top_k, max_pairs), max_bytes)
+
+
 def main():
     """从文件生成维度统计 JSON。
 
     使用：python3 dimension_profile.py；可传 --cube、--data、--output、--top-k、
-    --max-pairs。默认读取 mock 输入，输出 mock/dimension_profile.json。
+    --max-pairs、--max-bytes。默认是紧凑摘要，--detail 显式输出旧详细结构。
+    默认读取 mock 输入，输出 mock/dimension_profile.json。
     原理：读取 JSON 后调用 dimension_profile 并写文件，不连接数据库；现有输出会覆盖。
     路径相对工作目录，父目录必须存在；错误直接抛出，非标准 JSON 数值不会写入输出。
     """
@@ -249,11 +262,15 @@ def main():
     parser.add_argument('--cube', type=Path, default=Path('mock/cube.json'))
     parser.add_argument('--data', type=Path, default=Path('mock/events.json'))
     parser.add_argument('--output', type=Path, default=Path('mock/dimension_profile.json'))
-    parser.add_argument('--top-k', type=int, default=10)
+    parser.add_argument('--top-k', type=int, default=8)
     parser.add_argument('--max-pairs', type=int, default=6)
+    parser.add_argument('--detail', action='store_true', help='显式输出旧版详细结构')
+    parser.add_argument('--max-bytes', type=int, default=16000)
     args = parser.parse_args()
-    profile = dimension_profile(json.loads(args.data.read_text()), json.loads(args.cube.read_text()), args.top_k, args.max_pairs)
-    args.output.write_text(json.dumps(profile, ensure_ascii=False, indent=2, allow_nan=False) + '\n')
+    rows, cube = json.loads(args.data.read_text()), json.loads(args.cube.read_text())
+    profile = (dimension_profile_detail(rows, cube, args.top_k, args.max_pairs) if args.detail
+               else dimension_profile(rows, cube, args.top_k, args.max_pairs, args.max_bytes))
+    args.output.write_text(json.dumps(profile, ensure_ascii=False, separators=(',', ':'), allow_nan=False) + '\n')
     print(f"Wrote {args.output}: {len(profile['single_dimensions'])} dimensions, {len(profile['combinations'])} pairs")
 
 

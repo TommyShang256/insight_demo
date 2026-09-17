@@ -11,7 +11,7 @@ description: 根据同一 cube 的 StatisticProfile 与 DimensionProfile，为 O
 
 需要用户问题、StatisticProfile、DimensionProfile，以及对应 SQL 结果的数据访问方式（本地文件或已授权的结果快照/读取工具）。可选提供任务数、并发和上下文预算。没有具体业务问题时，默认探索返回结果的时间变化与维度差异，不自行追求因果解释。
 
-开始时读取 [字段契约](references/profile-contract.md)。当前适配 StatisticProfile 2.0、DimensionProfile 1.0。不要要求 cube_id、公式、辅助列、业务汇总值或其他实际不存在的字段。
+开始时读取 [字段契约](references/profile-contract.md)。当前适配 紧凑 StatisticProfile 3.0、DimensionProfile 2.0；旧详细结构仅在显式明细查询时使用。不要要求 cube_id、公式、辅助列、业务汇总值或其他实际不存在的字段。
 
 - 只分析原 SQL 已返回的数据。cube 的同维度过滤为 OR、不同维度为 AND，均已执行；任务条件用于进一步选择这个结果集，不替代或重跑原 SQL 的过滤。
 - 不重算业务指标：不对各组收入/计数再求整体值，不平均转化率作为整体转化率，不拼造分子分母。允许对返回单元格做描述统计、比较同粒度值，并明确其描述性含义。
@@ -26,7 +26,7 @@ description: 根据同一 cube 的 StatisticProfile 与 DimensionProfile，为 O
 
 这些检查只能确认表面一致。现有输出没有快照 ID；不能仅凭同样行数声称来自同一快照。记录数据来源与 profile 的对应依据；本地文件可以记录文件哈希与稳定行索引。若来源无法对应，先校验/补齐，不能派发已声称一致的数据任务。行数或口径冲突时停止依赖该冲突的任务，不混用两份 profile。
 
-读取截断和不可用状态：StatisticProfile 的时间桶截断；每个单维/组合的 coverage；DimensionProfile 顶层 skipped_pairs。记录未展示范围，不把未展示等同于不存在。
+先按 stats_columns、metric_schema、spread_columns 和 representative_columns 解码列式表。默认摘要覆盖全部结果：时间 windows 是展示窗口而非原小时桶，各维度 group_metric_spreads 来自全部组且每组等权，不能当成结果行总体分布。读取 output_budget.reduced、窗口 spans_unobserved_gap、每项 coverage 及顶层 skipped_pairs；区分摘要计算覆盖与具体组展开覆盖。窗口内混合多个系列时只描述混合分布，不能叫业务总量曲线。
 
 - 零结果：输出无可分析结果，不派空任务。
 - 无普通维度：跳过维度拆分，按时间或指标组织。
@@ -49,11 +49,13 @@ description: 根据同一 cube 的 StatisticProfile 与 DimensionProfile，为 O
 | 高基数且 Top-K 覆盖低 | 先获取实际剩余键/结果行，再分批或进行明确标注的探索性抽样；不假造 Other 的数据 |
 | 缺失/非有限值等影响结论 | 将限制交给相关任务，必要时安排独立质量核对；不据此自动认定业务异常 |
 
-频次 Top-K 和基数乘积排序只控制成本，不证明洞察价值。默认先从一个紧凑批次开始，只有出现具体未解问题才增加下钻。并发遵循运行环境与用户限制；没有明确预算时建议最多 3 个同时执行，按实际能力降低。不改变用户配置来实现并发。
+frequency.top10_row_share 是频次集中度，不等于代表组覆盖率；representatives 还包含指标组中位数/离散程度的两端及中间组，具体选择依据见 selection_reasons。组间分布供选择比较任务，单例/小样本组须保留行数限制；不能把代表组当成所有组。频次 Top-K 和基数乘积排序只控制成本，不证明洞察价值。默认先从一个紧凑批次开始，只有出现具体未解问题才增加下钻。并发遵循运行环境与用户限制；没有明确预算时建议最多 3 个同时执行，按实际能力降低。不改变用户配置来实现并发。
 
 对每个候选切片记录 row_count、选取原因、相关 profile 路径、预计数据体积。仅已输出的原切片能直接使用其行数；时间交集、多条件并集和剩余部分需实际计数，不把行占比相乘估算成准确值。
 
 若单任务超上下文，减少无关指标列，或按普通维度/时间稳定分片；不要只给一个巨大文件路径就假定 subagent 可以观察全部数据。对边界变化问题保留必要相邻窗口；对比较问题保证比较两侧都在任务数据中。若抽样，写明方法、种子、覆盖和限制，样本结论不能推广为全部结果。
+
+按需展开：使用 `query_profile.py --kind groups --dimensions channel --limit 10` 取完整值列表；用 `--metrics revenue` 限定指标，用 `--kind time --start ... --end ...` 取指定时段的原粒度桶。`--filters` 接受 `{name,type,value}` 对象的 JSON 数组，条件 AND。按 has_more/next_offset 继续读取，并确认 data_sha256 和 query 不变。明细数量和字节均有限制，不一次读取全部文件或使用 --detail 把巨量旧结构塞入上下文；摘要本身足以决策时直接派发结果行，无需先读所有明细。
 
 ## 3. 建立任务清单与数据定位
 
@@ -72,7 +74,7 @@ description: 根据同一 cube 的 StatisticProfile 与 DimensionProfile，为 O
 返回要求：按下方统一结果格式；不得递归委派
 ```
 
-类型化条件直接使用 DimensionProfile 的 `groups[].slice`。同一组合各条件为 AND；多个备选切片为 OR，并明确括号。NULL 用空值判断（SQL `<=>` 或 `IS NULL`），不把它转换为字符串。用已有结果上的读取/筛选获取数据，不直接改查源表；保留重复结果行，不能静默去重。
+摘要 representatives 的第一列是按 item.dimensions 排列的 [type,value] 数组；将其与维度名组合为类型化条件。明细响应的 items[].slice 可直接使用。同一组合各条件为 AND；多个备选切片为 OR，并明确括号。NULL 用空值判断（SQL `<=>` 或 `IS NULL`），不把它转换为字符串。用已有结果上的读取/筛选获取数据，不直接改查源表；保留重复结果行，不能静默去重。
 
 本地 JSON 列表可用原数组的零基索引作为引用；先定位再排序或切片，索引必须始终指向原文件。数据库分页需稳定的结果定位方式，若缺唯一键可先物化并分配行号；仅维度键不能区分重复结果行。
 
