@@ -1,69 +1,94 @@
-# Insight demo：Cube Profiling
+# Insight demo：完整 Profile JSON + 分层读取
 
-Python 3.9+，仅使用标准库。两路 profile 默认生成面向委派的紧凑摘要：全量计算，限制展开长度。输入是已执行 SQL 的结果，不反查底表、不重算业务指标。
+Python 标准库实现，无第三方依赖。两路 profile 保存完整统计，agent 通过一个读取工具按需获得表格；不使用数据库、会话账本或签名游标。
 
-```sh
-python3 mock/generate.py
-python3 statistic_profile.py
-python3 dimension_profile.py
-python3 -m unittest -v
+## 目录结构
+
+```text
+insight_demo/
+├── profiling/                     # Python 包：算法与读取工具
+│   ├── __init__.py
+│   ├── statistic.py               # StatisticProfile
+│   ├── dimension.py               # DimensionProfile
+│   └── reader.py                  # 分层读取完整 JSON
+├── tests/                         # 测试，与三个模块对应
+├── examples/sales/                 # 独立、可复现的销售示例
+│   ├── generate.py
+│   ├── cube.json
+│   ├── query.sql
+│   ├── query_result.json
+│   └── output/                    # 完整 profile JSON
+├── docs/design.md                  # 设计与口径约定
+├── .opencode/skills/               # OpenCode 委派 skill
+└── README.md
 ```
 
-默认输出 `mock/statistic_profile.json` 与 `mock/dimension_profile.json`。当前 mock 的紧凑 JSON：两路分别约 12 KB、16 KB，原详细结构同样紧凑编码约 453 KB、102 KB。压缩来自减少重复结构和逐项展开，不仅是去掉缩进。
+以下命令在仓库根目录运行，无需安装包；通过 `python3 -m profiling.<模块>` 调用。核心计算函数接收内存数据，不读取示例目录；CLI 的默认输入/输出路径指向销售示例。
 
-## 默认摘要
+## 生成完整结果
 
-StatisticProfile 3.0 保留数据质量、各指标全局分布，并用最多 24 个展示窗口覆盖全部有效时间结果。窗口优先不跨未观测间隔；段数超过预算时可打包，但明确标记 `spans_unobserved_gap`。窗口分位数直接由原结果值计算，极值附原数组行索引和时间。
+```sh
+python3 examples/sales/generate.py
+python3 -m profiling.statistic
+python3 -m profiling.dimension
+python3 -m unittest discover -s tests -v
+```
 
-DimensionProfile 2.0 对每个已计算的单维/二阶组合保留：
+- `examples/sales/output/statistic_profile.json`：StatisticProfile 2.0，全局统计、全部时间桶及完整指标分布。
+- `examples/sales/output/dimension_profile.json`：DimensionProfile 1.0，所有单维和已计算组合的全部组、频次、结果行占比、指标分布、时间覆盖。
+- 默认最多计算 6 个二阶组合；未计算组合仍列入 `coverage.skipped_pairs`。这个计算范围限制不等于按 Top-K 丢弃组明细。
 
-- 全量组数、空值、组大小分布、单例组规模、频次 Top-10 覆盖。
-- 全部数值组的指标中位数/标准差分布，每组等权，明确区别于原结果行分布。
-- 最多 8 个具体代表组，低基数时全部展示；高基数时轮转选高频组和指标组统计的两端及中间组，并保留选择原因与样本量。
-- 代表组已展开/未展开的组数和行数，以及未计算的二阶组合。
+当前 mock 保存 279 个时间桶；商品的 77 个值及每个已计算组合的所有组均完整保存。`*_detail` 原子接口保留用于测试；正常调用 `statistic_profile(rows,cube)` / `dimension_profile(rows,cube,max_pairs=6)` 不截断组或桶。
 
-`metric_schema` 声明指标顺序，`stats_columns` 声明统计列顺序，其他表也附列名。数组中的 NULL 仍保留。低基数渠道维度用几行表达，不再为每个指标反复嵌套长字段说明。
+## 唯一的分层读取工具
+
+```sh
+# 全量概况：全局指标分布、维度频次及组间差异、少量代表时间桶
+python3 -m profiling.reader --level overview
+
+# 指定维度值列表，简单分页
+python3 -m profiling.reader --level index --dimension channel --limit 20
+python3 -m profiling.reader --level index --dimension product_id --offset 20 --limit 20
+
+# 指定维度值的收入明细；NULL 使用 --values '[null]'
+python3 -m profiling.reader --level detail --dimension channel --values '["ads"]' --metrics revenue
+
+# 指定范围的原时间桶；左闭右开
+python3 -m profiling.reader --level index --start '2026-08-15' --end '2026-08-17'
+python3 -m profiling.reader --level detail --start '2026-08-15' --end '2026-08-17' --metrics revenue --fields min p50 max
+
+# 二阶组合，values 顺序对应 dimension 顺序
+python3 -m profiling.reader --level detail --dimension channel region --values '["ads","east"]' --metrics revenue
+```
+
+返回 JSON 信封，`content` 是 Markdown 表格；`total_count/returned_count/has_more/next_offset` 表示分页。`detail` 每个“组或时间桶 × 指标”占一行；页偏移按实际返回表格行推进。
+
+默认每页最多 20 行、最终响应最多 8192 字节（含 JSON 转义及末尾换行）。超限时减少本页行数；单行仍超限则报错，请限定指标或 `fields`。长字符串只在表格预览中标记截短，完整值仍在 JSON。`max_bytes` 是字节上限，不是 token 数；不维护跨调用累计预算。
+
+Python 调用：
 
 ```python
-from statistic_profile import statistic_profile
-from dimension_profile import dimension_profile
-statistic = statistic_profile(rows, cube, max_windows=24, max_bytes=16000)
-dimension = dimension_profile(rows, cube, top_k=8, max_pairs=6, max_bytes=16000)
+from profiling.reader import read_profile
+page = read_profile(level="detail", dimension=["channel"], values=["ads"],
+                    metrics=["revenue"], fields=["min", "p50", "max"])
+print(page["content"])
 ```
 
-每路默认硬限制 16000 字节，两路总计最多 32000 字节（不含文件末尾换行）；使用实际紧凑 UTF-8 JSON 测量，不宣称是模型精确 token 数。输出记录 `output_budget`。时间超预算会减少窗口并重算，保持全部时间覆盖；维度超预算先减少组合代表项、再减少单维代表项，保留全量概况。连最小概况都超预算时明确报错，要求选择更少的指标/维度或提高预算，不静默删除定义。`--max-bytes 0` 显式关闭限制。
+## 概况如何保持全局视野
 
-## 按需查询明细
+工具只读取完整 profile JSON，不读取源结果、不执行 SQL：
 
-不需要预先生成巨大的完整 profile 文件，直接在原查询结果上请求必要明细：
+- 全局指标分布直接取已保存统计。
+- 维度组大小分布、频次 Top-10 覆盖和组间中位数分布，由全部已保存组统计得到。组间分布每组等权，不当作原结果行分布。
+- 时间概况保留范围与桶数，展示最多 24 个原桶：首尾、指标极值所在桶，再补均匀位置。明确这是代表桶，不生成合并窗口，更不会平均小时分位数。
+- 概况本身也可分页；具体细节通过 index/detail 获取，不建议自动把所有页拼进上下文。
 
-```sh
-# 维度值列表与该页各组的收入分布
-python3 query_profile.py --kind groups --dimensions channel --metrics revenue --limit 10
+## 边界
 
-# 指定渠道、指定时段的原小时桶
-python3 query_profile.py --kind time --metrics revenue --start '2026-08-15 00:00:00' --end '2026-08-17 00:00:00' --filters '[{"name":"channel","type":"string","value":"ads"}]'
+profile 描述原 SQL 返回值，不重新计算业务指标。结果行占比不是收入占比；转化率均值不等于整体转化率。原过滤已执行，不重复过滤。读取工具不支持从已有组摘要推导未保存的交叉切片，如“ads 在某时段的分布”；这种请求明确报错，不假造统计。
 
-# 仅描述该切片的收入分布
-python3 query_profile.py --kind slice --metrics revenue --filters '[{"name":"channel","type":"null","value":null}]'
-```
+分页期间使用同一对 JSON，重新生成文件后从头读取；行数和维度/时间配置会校验，但没有快照或版本锁。每次调用完整解析两份文件到 Python 内存，控制的是模型响应长度，不宣称具备百万行流式读取。
 
-条件数组内 AND；时间左闭右开；时间解析遵守 cube 时区。分页返回 `total_count/returned_count/has_more/next_offset`；字节预算可能使本页条数小于 limit，应使用实际 next_offset 继续，并确认 `data_sha256` 与 `query` 相同。哈希覆盖数据及 cube 的规范序列化，不是文件字节哈希。行占比分母始终为完整输入行数。
+20 项测试包括完整保存 10,000 个维度值与时间桶、受限表格响应、分页、NULL/字符串区别及原统计 SQL 对照。原子方法继续保留中文说明和 MySQL 下推注释。
 
-详细函数 `statistic_profile_detail` 与 `dimension_profile_detail` 保留原结构，CLI 可显式加 `--detail`。这些入口不受摘要字节限制，不应默认传给主 agent。分页入口才适合获取高基数明细。
-
-## 边界与验证
-
-结果行占比不是收入贡献占比。转化率的分位数和均值只描述返回值，不等于整体转化率。摘要保留差异线索，但不保证代表组捕获所有现象；主 agent 需记录实际读取覆盖。摘要极值索引指向原文件数组，排序/切片后不要重新编号。
-
-当前仍完整加载结果。新增摘要层复用原原子统计，高基数组间分布需计算全部组；尚未实现流式或数据库下推执行。列式 JSON 减少模型输入，不意味着减少所有计算内存。NULL/非法值、浮点精度、夏令时本地小时歧义等仍遵循原统计规则。
-
-22 项测试覆盖原统计与 SQL 对照、时间分位数来自原值、全量组间分布、极值定位、间隔处理、预算缩减不丢覆盖、分页无重复遗漏及类型化 NULL 筛选。各原子方法保留中文说明与 MySQL 下推注释；未在真实 MySQL 上执行。
-
-## OpenCode 委派 Skill
-
-[项目 skill](.opencode/skills/cube-insight-delegation/SKILL.md)已适配新版本。可请求：
-
-> 使用 cube-insight-delegation skill，读取 mock 中两路紧凑摘要，以 mock/events.json 为结果数据，规划并执行分渠道的时间差异观察。按需查询明细，明确覆盖范围并提供行级证据。
-
-技能格式与示例数据可在本地验证，尚未执行真实 OpenCode subagent 调度。
+OpenCode 委派说明见 [skill](.opencode/skills/cube-insight-delegation/SKILL.md)。工具当前提供 Python/CLI 入口，未注册真实 OpenCode 工具。subagent 观察对象仍是原查询结果切片；profile 读取工具不充当原数据读取器。

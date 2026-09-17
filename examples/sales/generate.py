@@ -45,7 +45,7 @@ filtered_rows = [r for r in rows if r['event_time'] is not None and any(start <=
 assert sum(r['events'] for r in result) == len(filtered_rows)
 assert all(any(start <= r['event_time'] < end for start, end in time_ranges) for r in result)
 assert len({tuple(r[k] for k in ['event_time', 'channel', 'region', 'product_id']) for r in result}) == len(result)
-(out / 'events.json').write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
+(out / 'query_result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
 (out / 'query.sql').write_text(sql + ';\n')
 cube = {
     'dimensions': [

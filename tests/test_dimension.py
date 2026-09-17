@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 import unittest
 
-from dimension_profile import dimension_profile_detail as dimension_profile
+from profiling.dimension import dimension_profile_detail as dimension_profile
 
 
 def cube():
@@ -120,9 +120,9 @@ class DimensionProfileTests(unittest.TestCase):
             dimension_profile([], {'dimensions': [{'name': 'd'}, {'name': 'd'}]})
 
     def test_group_statistics_against_sql(self):
-        root = Path(__file__).parent
-        data = json.loads((root / 'mock/events.json').read_text())
-        spec = json.loads((root / 'mock/cube.json').read_text())
+        root = Path(__file__).resolve().parents[1]
+        data = json.loads((root / 'examples/sales/query_result.json').read_text())
+        spec = json.loads((root / 'examples/sales/cube.json').read_text())
         p = dimension_profile(data, spec, top_k=1000)
         with sqlite3.connect(':memory:') as db:
             db.execute('CREATE TABLE r (channel TEXT, region TEXT, product_id TEXT, revenue REAL)')

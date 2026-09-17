@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 import unittest
 
-from statistic_profile import statistic_profile_detail as statistic_profile, distribution
+from profiling.statistic import statistic_profile_detail as statistic_profile, distribution
 
 
 def cube():
@@ -110,9 +110,9 @@ class StatisticProfileTests(unittest.TestCase):
         self.assertEqual(p['metrics']['amount']['distribution']['finite_numeric_count'], 1)
 
     def test_mock_against_sql(self):
-        root = Path(__file__).parent
-        data = json.loads((root / 'mock/events.json').read_text())
-        spec = json.loads((root / 'mock/cube.json').read_text())
+        root = Path(__file__).resolve().parents[1]
+        data = json.loads((root / 'examples/sales/query_result.json').read_text())
+        spec = json.loads((root / 'examples/sales/cube.json').read_text())
         p = statistic_profile(data, spec)
         with sqlite3.connect(':memory:') as db:
             db.execute('CREATE TABLE r (revenue REAL, events INTEGER, event_time TEXT)')

@@ -257,11 +257,11 @@ def time_profile(rows, cube, max_buckets):
     }
 
 
-def statistic_profile_detail(rows, cube, max_time_buckets=1000):
+def statistic_profile_detail(rows, cube, max_time_buckets=None):
     """从一个 cube 的 SQL 结果生成完整 StatisticProfile，是主要调用入口。
 
     使用说明：rows 为 list[dict]，每行列集合相同，只包含 JSON 标量；
-    cube 提供 dimensions、metrics 和可选 time；max_time_buckets 默认为 1000。
+    cube 提供 dimensions、metrics 和可选 time；max_time_buckets 默认为 None，表示全部桶。
     调用 profile = statistic_profile_detail(rows, cube)，返回可序列化的字典，包含
     scope、dataset、metrics、time 和 calculation，不修改传入的行或元数据。
     缺少必需列、列不一致、重复指标 ID 等已检查的错误会抛出 ValueError；
@@ -279,6 +279,8 @@ def statistic_profile_detail(rows, cube, max_time_buckets=1000):
     # 绝不拼接/执行 cube 内 SQL 字符串；本版本只把它们保留为说明。
     if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
         raise ValueError('rows 必须是对象列表')
+    if max_time_buckets is None:
+        max_time_buckets = max(1, len(rows))
     if not isinstance(cube, dict) or type(max_time_buckets) is not int or max_time_buckets <= 0:
         raise ValueError('cube 必须是对象，max_time_buckets 必须为正整数')
     dimensions = cube.get('dimensions', [])
@@ -316,25 +318,21 @@ def statistic_profile_detail(rows, cube, max_time_buckets=1000):
     }
 
 
-def statistic_profile(rows, cube, max_windows=24, max_bytes=16000):
-    """默认返回紧凑摘要；全量计算，最多 24 个时间展示窗口。
+def statistic_profile(rows, cube):
+    """生成全量 StatisticProfile；所有时间桶与完整分布均保存。
 
-    使用：statistic_profile(rows, cube)，字节上限默认 16000；0 为显式不设上限。
-    原理：复用原全局统计，并从原结果值压缩时间窗口，预算不足时减少窗口数。
-    完整旧结构可用 statistic_profile_detail；按切片分页使用 query_profile.py。
-    MySQL 下推参见 compact_profile.time_summary，各窗口不生成业务总量。
+    使用：statistic_profile(rows,cube)。展示长度由 profiling/reader.py 控制，计算结果不截断。
+    MySQL 下推沿用各原子方法注释，不重新计算业务指标。
     """
-    from compact_profile import bounded_statistic
-    return bounded_statistic(rows, cube, max_windows, max_bytes)
+    return statistic_profile_detail(rows, cube)
 
 
 def main():
     """从命令行读取 cube 与结果 JSON，计算并写出 StatisticProfile 文件。
 
-    使用说明：在项目目录执行 python3 statistic_profile.py；默认读取
-    mock/cube.json、mock/events.json，写入 mock/statistic_profile.json。
-    默认输出紧凑摘要；--max-windows 控制展示窗口，--max-bytes 控制字节预算。
-    --detail 显式使用详细结构，此时 --max-time-buckets 指定桶数量上限。
+    使用说明：在项目目录执行 python3 -m profiling.statistic；默认读取
+    examples/sales/cube.json、examples/sales/query_result.json，写入 examples/sales/output/statistic_profile.json。
+    默认保存全部时间桶和完整统计，不设展示上限。
     可用 --cube、--data、--output 指定路径。
     路径相对于当前工作目录；输出父目录需已存在，同名文件会被覆盖。
 
@@ -345,18 +343,13 @@ def main():
     """
     # 此 CLI 只读取查询结果文件；SQL 下推版本应由数据库驱动取得 r 的快照。
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--cube', type=Path, default=Path('mock/cube.json'))
-    parser.add_argument('--data', type=Path, default=Path('mock/events.json'))
-    parser.add_argument('--output', type=Path, default=Path('mock/statistic_profile.json'))
-    parser.add_argument('--max-time-buckets', type=int, default=1000)
-    parser.add_argument('--detail', action='store_true', help='显式输出旧版详细结构')
-    parser.add_argument('--max-windows', type=int, default=24)
-    parser.add_argument('--max-bytes', type=int, default=16000)
+    parser.add_argument('--cube', type=Path, default=Path('examples/sales/cube.json'))
+    parser.add_argument('--data', type=Path, default=Path('examples/sales/query_result.json'))
+    parser.add_argument('--output', type=Path, default=Path('examples/sales/output/statistic_profile.json'))
     args = parser.parse_args()
     rows, cube = json.loads(args.data.read_text()), json.loads(args.cube.read_text())
-    profile = (statistic_profile_detail(rows, cube, args.max_time_buckets) if args.detail
-               else statistic_profile(rows, cube, args.max_windows, args.max_bytes))
-    args.output.write_text(json.dumps(profile, ensure_ascii=False, separators=(',', ':'), allow_nan=False) + '\n')
+    profile = statistic_profile(rows, cube)
+    args.output.write_text(json.dumps(profile, ensure_ascii=False, indent=2, allow_nan=False) + '\n')
     print(f"Wrote {args.output}: {profile['dataset']['result_row_count']} result rows")
 
 

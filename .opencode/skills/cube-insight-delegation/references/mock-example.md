@@ -1,17 +1,17 @@
 # 当前 mock 的委派示例
 
 本例展示如何依据已生成的 profile 规划，不声称已执行 OpenCode subagent 分析。
-路径相对于仓库根目录：mock/statistic_profile.json、mock/dimension_profile.json、mock/events.json、mock/cube.json。
+路径相对于仓库根目录：examples/sales/output/statistic_profile.json、examples/sales/output/dimension_profile.json、examples/sales/query_result.json、examples/sales/cube.json。
 
 ## 真实 profile 事实
 
 - 查询结果 279 行，7 个字段；时间列 event_time，Asia/Shanghai，小时粒度。
-- 时间 profile 用 24 个展示窗口描述全部 279 个观测桶，无时间值缺失或解析失败。
+- 时间 profile 保存全部 279 个观测桶，overview 最多展示 24 个代表原桶，无时间值缺失或解析失败。
 - 查询覆盖 [2026-08-01, 2026-08-08) OR [2026-08-15, 2026-08-22)。中间一周被过滤排除，不能称为数据中断。
 - channel 有 4 组：referral 100 行、organic 93 行、ads 85 行、NULL 1 行；全部已展示。
 - region 有 3 组，全部展示。
-- product_id 有 77 组，全量组统计都参与摘要；频次 Top-10 覆盖 65/279 行（约 23.30%）。默认展开的 8 个代表组覆盖 34 行，未展开 69 组、245 行；代表组集合与频次 Top-10 不同。
-- channel × region 有 10 个实际组合，默认只展开 8 个代表组，但全量概况包含全部 10 组。其他含商品的组合也应分别读取 frequency 与 coverage，不能互换两者含义。
+- product_id 的 77 个组全部保存在 JSON；频次 Top-10 覆盖 65/279 行，但其余 67 组、214 行的统计也完整保留，可通过 index/detail 分页读取。
+- channel × region 保存全部 10 个组合；product_id × region 保存全部 172 组，channel × product_id 保存全部 168 组。
 - 结果中 channel 和 revenue 各有 1 个 NULL；缺失的是结果单元格，不说明源明细缺失。
 
 ## 用户只要求“整体观察”
@@ -37,6 +37,6 @@
 
 ## 三种反例
 
-1. 只读取商品 Top-10，却结论写“所有商品均……”：覆盖仅 65/279，必须补取剩余数据或限制结论。
+1. 只观察商品最高频 10 组，却结论写“所有商品均……”：覆盖仅 65/279，必须补取剩余数据或限制结论。
 2. 认为 8 月 8—14 日未出现代表业务骤降：这是原 SQL 排除范围。
 3. 将结果中各行 conversion_rate 平均后命名为整体转化率：只能称为这些返回单元格的均值，不能替代整体业务指标。
